@@ -59,6 +59,22 @@ class ObjectStoreWrongType(ObjectStoreException):
     """Exception raised when trying to store a DiffSyncModel of the wrong type."""
 
 
+class NamespaceViolation(ObjectStoreException):
+    """Exception raised when a namespace or key escapes its allowed boundary."""
+
+
+class SerializationError(ObjectStoreException):
+    """Exception raised when a value cannot be serialized with the configured backend codec."""
+
+
+class BackendNotFound(ObjectStoreException):
+    """Exception raised when a store backend name has not been registered."""
+
+
+class StoreOperationError(ObjectStoreException):
+    """Exception raised when a backend operation fails and no degradation policy applies."""
+
+
 class DiffException(Exception):
     """Base class for various failures related to Diff operations."""
 

@@ -44,7 +44,11 @@ from diffsync.exceptions import (
 )
 from diffsync.helpers import DiffSyncDiffer, DiffSyncSyncer
 from diffsync.store import BaseStore
+from diffsync.store.adapter import ModelStoreAdapter
+from diffsync.store.contract import Store, StoreState, create_store, registered_stores  # noqa: F401
+from diffsync.store.kv import LocalStore as KVLocalStore  # noqa: F401  (registers "local")
 from diffsync.store.local import LocalStore
+from diffsync.store.redis_kv import RedisStore as KVRedisStore  # noqa: F401  (registers "redis")
 from diffsync.utils import get_path, set_key, tree_string
 
 if sys.version_info >= (3, 11):
@@ -443,13 +447,19 @@ class Adapter:  # pylint: disable=too-many-public-methods
     def __init__(
         self,
         name: Optional[str] = None,
-        internal_storage_engine: Union[Type[BaseStore], BaseStore] = LocalStore,
+        internal_storage_engine: Union[Type[BaseStore], BaseStore, str, "Store"] = LocalStore,
     ) -> None:
         """Generic initialization function.
 
         Subclasses should be careful to call super().__init__() if they override this method.
         """
-        if isinstance(internal_storage_engine, BaseStore):
+        if isinstance(internal_storage_engine, str):
+            # Backend registered by name ("local", "redis", ...): wrap the
+            # key/value store in the model-oriented BaseStore adapter.
+            self.store = ModelStoreAdapter(internal_storage_engine, adapter=self)
+        elif isinstance(internal_storage_engine, Store) and not isinstance(internal_storage_engine, BaseStore):
+            self.store = ModelStoreAdapter(internal_storage_engine, adapter=self)
+        elif isinstance(internal_storage_engine, BaseStore):
             self.store = internal_storage_engine
             self.store.adapter = self
         else:

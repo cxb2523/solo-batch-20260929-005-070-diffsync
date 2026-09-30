@@ -340,3 +340,17 @@ def generate_release_notes(context, version=""):
         command += " --version `poetry version -s`"
     # Due to issues with git repo ownership in the containers, this must always run locally.
     context.run(command)
+
+
+@task(
+    help={
+        "interval": "Seconds between refreshes (default: 1.0).",
+        "once": "Print the current status once and exit instead of watching.",
+    }
+)
+def store_status(context, interval=1.0, once=False):
+    """Continuously print store backend states and their most recent switch events."""
+    command = f"python -m diffsync.store.status --interval {interval}"
+    if once:
+        command += " --once --no-clear"
+    context.run(command, pty=True)

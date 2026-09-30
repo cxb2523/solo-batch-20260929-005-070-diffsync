@@ -59,6 +59,26 @@ class ObjectStoreWrongType(ObjectStoreException):
     """Exception raised when trying to store a DiffSyncModel of the wrong type."""
 
 
+class StoreKeyNotFound(ObjectStoreException, KeyError):
+    """Exception raised when a store contract get/delete references a key that is not present.
+
+    Inherits from both ObjectStoreException and KeyError so that callers can handle it either as a
+    diffsync store error or as a standard mapping miss.
+    """
+
+
+class NamespaceBoundaryError(ObjectStoreException):
+    """Exception raised when an operation crosses a store namespace boundary."""
+
+
+class StoreBackendUnavailable(ObjectStoreException):
+    """Exception raised when a remote store backend cannot be reached."""
+
+
+class StoreSerializationError(ObjectStoreException):
+    """Exception raised when a value cannot be (de)serialized by the chosen store codec."""
+
+
 class DiffException(Exception):
     """Base class for various failures related to Diff operations."""
 

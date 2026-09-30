@@ -2,42 +2,112 @@
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Type, Union
 
-import structlog  # type: ignore
+from diffsync.exceptions import ObjectNotFound, StoreKeyNotFound
+from diffsync.store.contract import (
+    DEFAULT_NAMESPACE,
+    StoreContract,
+)
+from diffsync.store.contract import (
+    StoreStatus as StoreStatus,
+)
+from diffsync.store.contract import (
+    SwitchEvent as SwitchEvent,
+)
+from diffsync.store.contract import (
+    all_stores as all_stores,
+)
+from diffsync.store.contract import (
+    create_store as create_store,
+)
+from diffsync.store.contract import (
+    get_store_class as get_store_class,
+)
+from diffsync.store.contract import (
+    recent_events as recent_events,
+)
+from diffsync.store.contract import (
+    register_store as register_store,
+)
+from diffsync.store.contract import (
+    registered_stores as registered_stores,
+)
 
-from diffsync.exceptions import ObjectNotFound
+__all__ = [
+    "BaseStore",
+    "DEFAULT_NAMESPACE",
+    "StoreContract",
+    "StoreStatus",
+    "SwitchEvent",
+    "all_stores",
+    "create_store",
+    "get_store_class",
+    "recent_events",
+    "registered_stores",
+    "register_store",
+]
 
 if TYPE_CHECKING:
     from diffsync import Adapter, DiffSyncModel
 
 
-class BaseStore:
-    """Reference store to be implemented in different backends."""
+class BaseStore(StoreContract):
+    """Reference store to be implemented in different backends.
+
+    Extends the key/value :class:`StoreContract` with the DiffSync model-level API used by
+    :class:`~diffsync.Adapter`. The ``get`` method serves both APIs: it is a plain key lookup by
+    default and dispatches to :meth:`get_model` when called with the keyword-only ``model``
+    argument.
+    """
 
     def __init__(
-        self,  # pylint: disable=unused-argument
+        self,
         *args: Any,  # pylint: disable=unused-argument
         adapter: Optional["Adapter"] = None,
         name: str = "",
-        **kwargs: Any,  # pylint: disable=unused-argument
+        namespace: str = DEFAULT_NAMESPACE,
+        allow_pickle: bool = False,
+        **kwargs: Any,
     ) -> None:
         """Init method for BaseStore."""
-        self.adapter = adapter
-        self.name = name or self.__class__.__name__
-        self._log = structlog.get_logger().new(store=self)
+        super().__init__(namespace=namespace, allow_pickle=allow_pickle, name=name, **kwargs)
+        self._adapter = adapter
 
-    def __str__(self) -> str:
-        """Render store name."""
-        return self.name
+    @property
+    def adapter(self) -> Optional["Adapter"]:
+        """Adapter owning this store, if any."""
+        return self._adapter
 
-    def get_all_model_names(self) -> Set[str]:
-        """Get all the model names stored.
-
-        Return:
-            Set of all the model names.
-        """
-        raise NotImplementedError
+    @adapter.setter
+    def adapter(self, value: Optional["Adapter"]) -> None:
+        self._adapter = value
+        fallback = getattr(self, "_fallback", None)
+        if fallback is not None:
+            fallback.adapter = value
 
     def get(
+        self,
+        key: Optional[str] = None,
+        namespace: Optional[str] = None,
+        *,
+        model: Union[str, "DiffSyncModel", Type["DiffSyncModel"], None] = None,
+        identifier: Union[str, Dict, None] = None,
+    ) -> Any:
+        """Get a key/value entry or a stored DiffSync model.
+
+        When ``model`` is provided, behaves as the model-level ``get(model=..., identifier=...)``
+        API; otherwise behaves as the contract ``get(key, namespace)`` lookup.
+        """
+        if model is not None:
+            return self.get_model(model=model, identifier=identifier)
+        if key is None:
+            raise TypeError("get() requires either 'key' or the keyword-only 'model' argument")
+        return self.get_item(key=key, namespace=namespace)
+
+    def get_item(self, key: str, namespace: Optional[str] = None) -> Any:
+        """Return the raw value stored at ``key`` (contract lookup). Backends override this."""
+        raise NotImplementedError
+
+    def get_model(
         self, *, model: Union[str, "DiffSyncModel", Type["DiffSyncModel"]], identifier: Union[str, Dict]
     ) -> "DiffSyncModel":
         """Get one object from the data store based on its unique id.
@@ -49,6 +119,20 @@ class BaseStore:
         Raises:
             ValueError: if obj is a str and identifier is a dict (can't convert dict into a uid str without a model class)
             ObjectNotFound: if the requested object is not present
+        """
+        raise NotImplementedError
+
+    @staticmethod
+    def missing_key(modelname: str, uid: str, store_name: str) -> StoreKeyNotFound:
+        """Build a not-found error usable both as ``ObjectNotFound`` and as ``KeyError``."""
+        message = f"{modelname} {uid} not present in {store_name}"
+        return StoreKeyNotFound(message)
+
+    def get_all_model_names(self) -> Set[str]:
+        """Get all the model names stored.
+
+        Return:
+            Set of all the model names.
         """
         raise NotImplementedError
 

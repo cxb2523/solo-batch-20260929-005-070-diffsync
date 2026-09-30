@@ -1,23 +1,76 @@
 """LocalStore module."""
 
+import threading
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Dict, List, Set, Type, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Type, Union
 
 from diffsync.exceptions import ObjectAlreadyExists, ObjectNotFound
 from diffsync.store import BaseStore
+from diffsync.store.contract import DEFAULT_NAMESPACE, register_store, validate_namespace
 
 if TYPE_CHECKING:
     from diffsync import DiffSyncModel
 
 
+@register_store("local")
 class LocalStore(BaseStore):
-    """LocalStore class."""
+    """Synchronous, zero-dependency, in-process store.
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    Key/value data is kept in plain dictionaries partitioned by namespace. A single short-lived
+    lock only guards individual read-modify-write operations; reads and writes stay synchronous
+    and allocation-free on the hot path.
+    """
+
+    def __init__(self, *args: Any, namespace: str = DEFAULT_NAMESPACE, multi_namespace: bool = False, **kwargs: Any) -> None:
         """Init method for LocalStore."""
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, namespace=namespace, **kwargs)
+        self._data: Dict[str, Dict[str, Any]] = defaultdict(dict)
+        self._models: Dict[str, Dict[str, "DiffSyncModel"]] = defaultdict(dict)
+        self._kv_lock = threading.RLock()
+        # Internal use only: a multi-namespace mirror (e.g. RedisStore fallback) serves KV data
+        # across namespaces while model data keeps using the store's own namespace.
+        self._multi_namespace = multi_namespace
 
-        self._data: Dict = defaultdict(dict)
+    def _kv_namespace(self, namespace: Optional[str]) -> str:
+        """Resolve the target namespace for a KV operation."""
+        if self._multi_namespace:
+            ns = namespace or self.namespace
+            validate_namespace(ns)
+            return ns
+        return self._resolve_namespace(namespace)
+
+    # -- contract key/value API -----------------------------------------------------------
+
+    def get_item(self, key: str, namespace: Optional[str] = None) -> Any:
+        """Return the value stored at ``key`` in ``namespace``."""
+        ns = self._kv_namespace(namespace)
+        with self._kv_lock:
+            if key not in self._data[ns]:
+                raise self.missing_key(ns, key, str(self))
+            return self._data[ns][key]
+
+    def set(self, key: str, value: Any, namespace: Optional[str] = None) -> None:
+        """Store ``value`` at ``key`` in ``namespace``."""
+        ns = self._kv_namespace(namespace)
+        with self._kv_lock:
+            self._data[ns][key] = value
+
+    def delete(self, key: str, namespace: Optional[str] = None) -> bool:
+        """Delete ``key`` from ``namespace``; return whether a value was present."""
+        ns = self._kv_namespace(namespace)
+        with self._kv_lock:
+            if key not in self._data[ns]:
+                return False
+            del self._data[ns][key]
+            return True
+
+    def keys(self, namespace: Optional[str] = None) -> List[str]:
+        """List all keys present in ``namespace``."""
+        ns = self._kv_namespace(namespace)
+        with self._kv_lock:
+            return list(self._data[ns].keys())
+
+    # -- model-level API -------------------------------------------------------------------
 
     def get_all_model_names(self) -> Set[str]:
         """Get all the model names stored.
@@ -25,9 +78,9 @@ class LocalStore(BaseStore):
         Return:
             Set of all the model names.
         """
-        return set(self._data.keys())
+        return set(self._models.keys())
 
-    def get(
+    def get_model(
         self, *, model: Union[str, "DiffSyncModel", Type["DiffSyncModel"]], identifier: Union[str, Dict]
     ) -> "DiffSyncModel":
         """Get one object from the data store based on its unique id.
@@ -44,9 +97,9 @@ class LocalStore(BaseStore):
 
         uid = self._get_uid(model, object_class, identifier)
 
-        if uid not in self._data[modelname]:
+        if uid not in self._models[modelname]:
             raise ObjectNotFound(f"{modelname} {uid} not present in {str(self)}")
-        return self._data[modelname][uid]
+        return self._models[modelname][uid]
 
     def get_all(self, *, model: Union[str, "DiffSyncModel", Type["DiffSyncModel"]]) -> List["DiffSyncModel"]:
         """Get all objects of a given type.
@@ -62,7 +115,7 @@ class LocalStore(BaseStore):
         else:
             modelname = model.get_type()
 
-        return list(self._data[modelname].values())
+        return list(self._models[modelname].values())
 
     def get_by_uids(
         self, *, uids: List[str], model: Union[str, "DiffSyncModel", Type["DiffSyncModel"]]
@@ -83,9 +136,9 @@ class LocalStore(BaseStore):
 
         results = []
         for uid in uids:
-            if uid not in self._data[modelname]:
+            if uid not in self._models[modelname]:
                 raise ObjectNotFound(f"{modelname} {uid} not present in {str(self)}")
-            results.append(self._data[modelname][uid])
+            results.append(self._models[modelname][uid])
         return results
 
     def add(self, *, obj: "DiffSyncModel") -> None:
@@ -100,7 +153,7 @@ class LocalStore(BaseStore):
         modelname = obj.get_type()
         uid = obj.get_unique_id()
 
-        existing_obj = self._data[modelname].get(uid)
+        existing_obj = self._models[modelname].get(uid)
         if existing_obj:
             if existing_obj is not obj:
                 raise ObjectAlreadyExists(f"Object {uid} already present", obj)
@@ -110,7 +163,7 @@ class LocalStore(BaseStore):
         if not obj.adapter:
             obj.adapter = self.adapter
 
-        self._data[modelname][uid] = obj
+        self._models[modelname][uid] = obj
 
     def update(self, *, obj: "DiffSyncModel") -> None:
         """Update a DiffSyncModel object to the store.
@@ -121,25 +174,25 @@ class LocalStore(BaseStore):
         modelname = obj.get_type()
         uid = obj.get_unique_id()
 
-        existing_obj = self._data[modelname].get(uid)
+        existing_obj = self._models[modelname].get(uid)
         if existing_obj is obj:
             return
 
-        self._data[modelname][uid] = obj
+        self._models[modelname][uid] = obj
 
     def remove_item(self, modelname: str, uid: str) -> None:
         """Remove one item from store."""
-        if uid not in self._data[modelname]:
+        if uid not in self._models[modelname]:
             raise ObjectNotFound(f"{modelname} {uid} not present in {str(self)}")
-        del self._data[modelname][uid]
+        del self._models[modelname][uid]
 
     def count(self, *, model: Union[str, "DiffSyncModel", Type["DiffSyncModel"], None] = None) -> int:
         """Returns the number of elements of a specific model, or all elements in the store if unspecified."""
         if not model:
-            return sum(len(entries) for entries in self._data.values())
+            return sum(len(entries) for entries in self._models.values())
 
         if isinstance(model, str):
             modelname = model
         else:
             modelname = model.get_type()
-        return len(self._data[modelname])
+        return len(self._models[modelname])

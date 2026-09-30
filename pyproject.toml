@@ -37,6 +37,9 @@ typing-extensions = { version = ">=4.0.1", python = "<3.11" }
 [tool.poetry.extras]
 redis = ["redis"]
 
+[tool.poetry.scripts]
+store_status = "diffsync.store.status:main"
+
 [tool.poetry.group.dev.dependencies]
 coverage = "*"
 pytest = "*"

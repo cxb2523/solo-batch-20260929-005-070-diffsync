@@ -443,17 +443,17 @@ class Adapter:  # pylint: disable=too-many-public-methods
     def __init__(
         self,
         name: Optional[str] = None,
-        internal_storage_engine: Union[Type[BaseStore], BaseStore] = LocalStore,
+        internal_storage_engine: Union[Type[BaseStore], BaseStore, str] = LocalStore,
     ) -> None:
         """Generic initialization function.
 
         Subclasses should be careful to call super().__init__() if they override this method.
+
+        ``internal_storage_engine`` may be a store instance, a store class, or the registered
+        name of a store backend (such as ``"local"`` or ``"redis"``).
         """
-        if isinstance(internal_storage_engine, BaseStore):
-            self.store = internal_storage_engine
-            self.store.adapter = self
-        else:
-            self.store = internal_storage_engine(adapter=self)
+        self.store = self._init_store(internal_storage_engine)
+        self.store.adapter = self
 
         # If the type is not defined, use the name of the class as the default value
         if self.type is None:
@@ -461,6 +461,17 @@ class Adapter:  # pylint: disable=too-many-public-methods
 
         # If the name has not been provided, use the type as the name
         self.name = name if name else self.type
+
+    @staticmethod
+    def _init_store(engine: Union[Type[BaseStore], BaseStore, str]) -> BaseStore:
+        """Resolve ``engine`` (instance, class or registered backend name) into a store instance."""
+        if isinstance(engine, BaseStore):
+            return engine
+        elif isinstance(engine, str):
+            from diffsync.store.contract import create_store  # pylint: disable=import-outside-toplevel
+
+            return create_store(engine)
+        return engine(adapter=None)
 
     def __init_subclass__(cls) -> None:
         """Validate that references to specific DiffSyncModels use the correct modelnames.

@@ -12,3 +12,5 @@ API Reference
 
    diffsync.store.local
    diffsync.store.redis
+   diffsync.store.contract
+   diffsync.store.status
